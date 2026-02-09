@@ -5,7 +5,7 @@ from PIL import Image
 import cv2
 
 # ============================================================================
-# 1. PAGE CONFIGURATION
+# PAGE CONFIGURATION (حافظت على إعداداتك)
 # ============================================================================
 st.set_page_config(
     page_title="Age, Gender & Ethnicity Predictor",
@@ -15,20 +15,43 @@ st.set_page_config(
 )
 
 # ============================================================================
-# 2. CONSTANTS & MAPS
+# CUSTOM CSS (حافظت على التنسيق الجميل اللي عملته)
+# ============================================================================
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .prediction-box {
+        background-color: #f0f2f6;
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    .metric-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #1f77b4;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================================
+# CONSTANTS & CACHED MODEL LOAD
 # ============================================================================
 IMG_SIZE = 64
 GENDER_MAP = {0: 'Male 👨', 1: 'Female 👩'}
 ETHNICITY_MAP = {0: 'White', 1: 'Black', 2: 'Asian', 3: 'Indian', 4: 'Others'}
 
-# ============================================================================
-# 3. LOAD MODEL (Cached to save RAM)
-# ============================================================================
 @st.cache_resource
-def load_trained_model():
-    """Load the model once and keep it in memory"""
+def load_model_file():
+    """تحميل الموديل مرة واحدة لضمان استقرار السيرفر"""
     try:
-        # تأكدنا أن الاسم مطابق للملف المرفوع في الـ GitHub
+        # غيرت الاسم لـ best_vgg16.keras عشان يشتغل مع ملفك
         model = tf.keras.models.load_model('best_vgg16.keras')
         return model
     except Exception as e:
@@ -36,75 +59,86 @@ def load_trained_model():
         return None
 
 # ============================================================================
-# 4. IMAGE PREPROCESSING
+# PREPROCESSING & PREDICTION
 # ============================================================================
 def preprocess_image(image):
-    # تحويل الصورة إلى RGB إذا كانت بصيغة مختلفة
     if image.mode != "RGB":
         image = image.convert("RGB")
+    img = np.array(image)
+    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+    img = img.astype(np.float32) / 255.0
+    return np.expand_dims(img, axis=0)
+
+def make_prediction(model, image_tensor):
+    predictions = model.predict(image_tensor, verbose=0)
     
-    # تحويل إلى Array وتصغير الحجم
-    img_array = np.array(image)
-    img_array = cv2.resize(img_array, (IMG_SIZE, IMG_SIZE))
+    # استخراج النتائج (بناءً على تصميم الـ Multi-head الخاص بك)
+    age_pred = int(np.round(predictions[0][0][0]))
+    gender_raw = predictions[1][0][0]
+    gender_pred = 1 if gender_raw > 0.5 else 0
+    gender_conf = gender_raw if gender_pred == 1 else (1 - gender_raw)
     
-    # التطبيع (Normalization) إضافة بُعد الـ Batch
-    img_array = img_array.astype(np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    return img_array
+    ethnicity_probs = predictions[2][0]
+    eth_pred = np.argmax(ethnicity_probs)
+    eth_conf = ethnicity_probs[eth_pred]
+    
+    return {
+        'age': age_pred,
+        'gender': gender_pred,
+        'gender_confidence': float(gender_conf),
+        'ethnicity': eth_pred,
+        'ethnicity_confidence': float(eth_conf),
+        'ethnicity_probs': ethnicity_probs
+    }
 
 # ============================================================================
-# 5. CSS STYLING
-# ============================================================================
-st.markdown("""
-<style>
-    .main-header { font-size: 2.5rem; font-weight: bold; color: #1f77b4; text-align: center; }
-    .prediction-box { background-color: #f0f2f6; padding: 1rem; border-radius: 10px; margin-bottom: 10px; }
-    .metric-value { font-size: 1.5rem; font-weight: bold; color: #1f77b4; }
-</style>
-""", unsafe_allow_html=True)
-
-# ============================================================================
-# 6. MAIN APP LOGIC
+# MAIN APP (التصميم الأصلي بتاعك)
 # ============================================================================
 def main():
     st.markdown("<h1 class='main-header'>🧠 Age, Gender & Ethnicity Predictor</h1>", unsafe_allow_html=True)
     
-    # Sidebar Info
-    st.sidebar.info("This app uses a Multi-Head CNN (VGG16-based) to predict Age, Gender, and Ethnicity.")
-    
-    model = load_trained_model()
-    if model is None:
-        st.warning("Model file 'best_vgg16.keras' not found. Please check your GitHub repository.")
-        st.stop()
+    # Sidebar
+    with st.sidebar:
+        st.markdown("## 📋 About")
+        st.info("This app uses a **Multi-Head CNN** to predict Age, Gender, and Ethnicity.")
+        st.markdown("## ⚙️ Settings")
+        show_confidence = st.checkbox("Show confidence scores", value=True)
 
-    uploaded_file = st.file_uploader("Upload a face image...", type=['jpg', 'jpeg', 'png'])
+    model = load_model_file()
+    if model is None: st.stop()
+
+    uploaded_file = st.file_uploader("Choose a face image...", type=['jpg', 'jpeg', 'png'])
 
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
-        
-        # Display Columns
+        processed_img = preprocess_image(image)
+        results = make_prediction(model, processed_img)
+
+        st.markdown("---")
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            st.image(image, caption="Uploaded Image", use_container_width=True)
-
+            st.markdown("### 📸 Uploaded Image")
+            st.image(image, use_container_width=True)
+        
         with col2:
-            with st.spinner("Analyzing..."):
-                processed_img = preprocess_image(image)
-                predictions = model.predict(processed_img, verbose=0)
-                
-                # توزيح النتائج بناءً على تصميم الـ Multi-head
-                # تأكد من ترتيب المخرجات (Outputs) في موديلك
-                age_p = int(np.round(predictions[0][0][0]))
-                gender_p = 1 if predictions[1][0][0] > 0.5 else 0
-                ethnicity_p = np.argmax(predictions[2][0])
+            st.markdown("### 🎯 Predictions")
+            
+            # Age
+            st.markdown(f"<div class='prediction-box'>👴 <b>Age:</b> <span class='metric-value'>{results['age']} years</span></div>", unsafe_allow_html=True)
+            
+            # Gender
+            st.markdown(f"<div class='prediction-box'>👥 <b>Gender:</b> <span class='metric-value'>{GENDER_MAP[results['gender']]}</span></div>", unsafe_allow_html=True)
+            if show_confidence: st.progress(results['gender_confidence'])
+            
+            # Ethnicity
+            st.markdown(f"<div class='prediction-box'>🌍 <b>Ethnicity:</b> <span class='metric-value'>{ETHNICITY_MAP[results['ethnicity']]}</span></div>", unsafe_allow_html=True)
+            if show_confidence: st.progress(results['ethnicity_confidence'])
 
-                # عرض النتائج
-                st.markdown("### 🎯 Prediction Results")
-                
-                st.markdown(f"<div class='prediction-box'>👴 <b>Age:</b> <span class='metric-value'>{age_p}</span> years</div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='prediction-box'>👥 <b>Gender:</b> <span class='metric-value'>{GENDER_MAP[gender_p]}</span></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='prediction-box'>🌍 <b>Ethnicity:</b> <span class='metric-value'>{ETHNICITY_MAP[ethnicity_p]}</span></div>", unsafe_allow_html=True)
+        # Download Button (اللمسة بتاعتك)
+        st.markdown("---")
+        download_text = f"Age: {results['age']}\nGender: {GENDER_MAP[results['gender']]}\nEthnicity: {ETHNICITY_MAP[results['ethnicity']]}"
+        st.download_button("📥 Download Results", download_text, file_name="results.txt")
 
 if __name__ == "__main__":
     main()
